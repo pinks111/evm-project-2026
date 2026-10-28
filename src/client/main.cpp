@@ -8,11 +8,11 @@
 const int PORT = 2024;
 
 void handleError(bool err, const char* msg) {
-    if (!err) {
-      return;
-    }
-    std::cerr << msg << WSAGetLastError() << std::endl;
-    exit(EXIT_FAILURE);
+  if (!err) {
+    return;
+  }
+  std::cerr << msg << WSAGetLastError() << std::endl;
+  exit(EXIT_FAILURE);
 }
 
 int main(int argc, char* const argv[]) {

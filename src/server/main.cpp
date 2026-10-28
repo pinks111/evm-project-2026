@@ -1,15 +1,16 @@
 #include<winsock2.h>
 #include <iostream>
+#include <string>
 
 #pragma comment(lib,"ws2_32.lib")
 const int PORT = 2024;
 
 void handleError(bool err, const char* msg) {
-    if (!err) {
-      return;
-    }
-    std::cerr << msg << WSAGetLastError() << std::endl;
-    exit(EXIT_FAILURE);
+  if (!err) {
+    return;
+  }
+  std::cerr << msg << WSAGetLastError() << std::endl;
+  exit(EXIT_FAILURE);
 }
 
 int main(int argc, char* const argv[]) {
@@ -45,63 +46,82 @@ int main(int argc, char* const argv[]) {
     SOCKET client_socket = accept(server_sock, nullptr, nullptr);
 
     if (client_socket == INVALID_SOCKET) {
-        std::cerr << "Accept failed: " << WSAGetLastError() << '\n';
-        break;
+      std::cerr << "Accept failed: " << WSAGetLastError() << '\n';
+      break;
     }
 
     std::cout << "Client connected\n";
-    char client_buffer[1024]{};
+    std::string message;
+    bool completed = false;
 
-    int received = recv(
-        client_socket,
-        client_buffer,
-        sizeof(client_buffer),
-        0
-    );
-
-    if (received == SOCKET_ERROR) {
+    while (true) {
+      char buf[256];
+      int received = recv(client_socket,
+                          buf,
+                          sizeof(buf),
+                          0  
+                        );
+      if (received == SOCKET_ERROR) {
         std::cerr << "Receive failed: " << WSAGetLastError() << '\n';
-    } else if (received == 0) {
-        std::cout << "Client disconnected without a message\n";
-    } else {
-        std::cout << "Message from client: ";
-        std::cout.write(client_buffer, received);
-        std::cout << '\n';
+        break;
+      }
+      if (received == 0) {
+        std::cout << "Client disconnected before completing the message\n";
+        break;
+      }
 
-        const char reply[] = "hello";
-        constexpr int reply_size = sizeof(reply) - 1;
-        int total_sent = 0;
+      message.append(buf, received);
+      size_t end = message.find("\n");
+      
+      std::size_t msg_size = (end == std::string::npos) ? message.size() : end;
 
-        while (total_sent < reply_size) {
-            int sent = send(
-                client_socket,
-                reply + total_sent,
-                reply_size - total_sent,
-                0
-            );
+      if (msg_size > 1024) {
+        std::cerr << "Message is too long\n";
+      break;
+      }
 
-            if (sent == SOCKET_ERROR) {
-                std::cerr << "Send failed: " << WSAGetLastError() << '\n';
-                break;
-            }
+      if (end != std::string::npos) {
+        message.resize(end);
+        completed = true;
+        break;
+      }
+    }
 
-            if (sent == 0) {
-                std::cerr << "Could not send the remaining bytes\n";
-                break;
-            }
+    if (completed) {
+      std::cout << "Message from client: " << message << '\n';
 
-            total_sent += sent;
+      const char reply[] = "hello";
+      constexpr int reply_size = sizeof(reply) - 1;
+      int total_sent = 0;
+
+      while (total_sent < reply_size) {
+        int sent = send(client_socket,
+                        reply + total_sent,
+                        reply_size - total_sent,
+                        0);
+
+        if (sent == SOCKET_ERROR) {
+          std::cerr << "Send failed: " << WSAGetLastError() << '\n';
+          break;
         }
 
-        if (total_sent == reply_size) {
-            std::cout << "Reply sent\n";
+        if (sent == 0) {
+          std::cerr << "Could not send the remaining bytes\n";
+          break;
         }
+
+        total_sent += sent;
+      }
+
+      if (total_sent == reply_size) {
+        std::cout << "Reply sent\n";
+      }
     }
 
     closesocket(client_socket);
     std::cout << "Connection closed\n\n";
   }
-
+  
   closesocket(server_sock);
   WSACleanup();
   return 0;
