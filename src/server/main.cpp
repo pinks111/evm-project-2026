@@ -1,6 +1,8 @@
 #include<winsock2.h>
 #include <iostream>
 #include <string>
+#include <algorithm>
+#include <array>
 
 #pragma comment(lib,"ws2_32.lib")
 const int PORT = 2024;
@@ -11,6 +13,19 @@ void handleError(bool err, const char* msg) {
   }
   std::cerr << msg << WSAGetLastError() << std::endl;
   exit(EXIT_FAILURE);
+}
+
+struct Client {
+  SOCKET socket = INVALID_SOCKET;
+  std::string player_name;
+  bool ready = false;
+  std::string pending;
+};
+
+void disconnect_client(Client& client) {
+    closesocket(client.socket);
+    client = Client{};
+    std::cout << "Connection closed\n";
 }
 
 int main(int argc, char* const argv[]) {
@@ -40,48 +55,76 @@ int main(int argc, char* const argv[]) {
     return 1;
   }
 
+  std::array<Client, 2> clients{};
+
   while (true) {
     std::cout << "Waiting for a client...\n";
 
-    SOCKET client_socket = accept(server_sock, nullptr, nullptr);
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(server_sock, &readfds);
 
-    if (client_socket == INVALID_SOCKET) {
-      std::cerr << "Accept failed: " << WSAGetLastError() << '\n';
+    for (const auto& client : clients) {
+      if (client.socket != INVALID_SOCKET) {
+        FD_SET(client.socket, &readfds);
+      }
+    }
+
+    if (select(0, &readfds, nullptr, nullptr, nullptr) == SOCKET_ERROR) {
+      std::cerr << "Select failed with error: " << WSAGetLastError() << std::endl;
       break;
     }
 
-    std::cout << "Client connected\n";
-
-    std::string player_name;
-    bool ready = false;
-    std::string pending;
+    if (FD_ISSET(server_sock, &readfds)) {
+      std::cout << "New client connection\n";
+      SOCKET client_socket = accept(server_sock, nullptr, nullptr);
+      if (client_socket == INVALID_SOCKET) {
+        std::cerr << "Accept failed: " << WSAGetLastError() << '\n';
+      } else {
+        auto it = std::find_if(clients.begin(), clients.end(),
+                              [](const Client& c) { return c.socket == INVALID_SOCKET; });
+        if (it == clients.end()) {
+          std::cout << "Lobby is full\n";
+          closesocket(client_socket);
+        } else {
+          it -> socket = client_socket;
+          std::cout << "Client connected\n";
+        }
+      }
+    }
+    
     bool connected = true;
 
-    while (connected) {
+    for (Client& client : clients) {
+      if (client.socket == INVALID_SOCKET || !FD_ISSET(client.socket, &readfds)) {
+        continue;
+      }
       char buf[256];
-      int received = recv(client_socket,
+      int received = recv(client.socket,
                           buf,
                           sizeof(buf),
                           0  
                         );
       if (received == SOCKET_ERROR) {
         std::cerr << "Receive failed: " << WSAGetLastError() << '\n';
-        break;
+        disconnect_client(client);
+        continue;
       }
       if (received == 0) {
-        if (pending.empty()) {
+        if (client.pending.empty()) {
           std::cout << "Client disconnected\n";
         } else {
           std::cout << "Client disconnected before completing the message\n";
         }
-        break;
+        disconnect_client(client);
+        continue;
       }
 
-      pending.append(buf, received);
+      client.pending.append(buf, received);
       
       while (true) {
-        size_t pos = pending.find('\n');
-        size_t line_size = (pos == std::string::npos) ? pending.size() : pos + 1;
+        size_t pos = client.pending.find('\n');
+        size_t line_size = (pos == std::string::npos) ? client.pending.size() : pos;
 
         if (line_size > 1024) {
           std::cerr << "Message too long, closing connection\n";
@@ -92,24 +135,24 @@ int main(int argc, char* const argv[]) {
           break;
         }
 
-        std::string line = pending.substr(0, pos);
-        pending.erase(0, pos + 1);
+        std::string line = client.pending.substr(0, pos);
+        client.pending.erase(0, pos + 1);
         std::cout << "Received message: " << line << std::endl;
 
         std::string reply;
 
-        if (line.starts_with("JOIN") && line.size() > 5) {
-          if (player_name.empty()) {
-            player_name = line.substr(5);
+        if (line.starts_with("JOIN ") && line.size() > 5) {
+          if (client.player_name.empty()) {
+            client.player_name = line.substr(5);
             reply = "OK JOIN\n";
           } else {
             reply = "ERR_ALREADY_JOINED\n";
           }
         } else if (line == "READY") {
-          if (player_name.empty()) {
+          if (client.player_name.empty()) {
             reply = "ERR_JOIN_FIRST\n";
           } else {
-            ready = true;
+            client.ready = true;
             reply = "OK READY\n";
           }
         } else {
@@ -120,7 +163,7 @@ int main(int argc, char* const argv[]) {
         int total_sent = 0;
 
         while (total_sent < reply_size) {
-          int sent = send(client_socket,
+          int sent = send(client.socket,
                           reply.data() + total_sent,
                           reply_size - total_sent,
                           0);
@@ -144,10 +187,10 @@ int main(int argc, char* const argv[]) {
         }
         std::cout << "Reply sent\n";
       }
+      if (!connected) {
+        disconnect_client(client);
+      }
     }
-
-    closesocket(client_socket);
-    std::cout << "Connection closed\n\n";
   }
   
   closesocket(server_sock);
