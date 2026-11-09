@@ -51,10 +51,10 @@ int main(int argc, char* const argv[]) {
     }
 
     std::cout << "Client connected\n";
-    std::string message;
-    bool completed = false;
+    std::string pending;
+    bool connected = true;
 
-    while (true) {
+    while (connected) {
       char buf[256];
       int received = recv(client_socket,
                           buf,
@@ -66,54 +66,60 @@ int main(int argc, char* const argv[]) {
         break;
       }
       if (received == 0) {
-        std::cout << "Client disconnected before completing the message\n";
+        if (pending.empty()) {
+          std::cout << "Client disconnected\n";
+        } else {
+          std::cout << "Client disconnected before completing the message\n";
+        }
         break;
       }
 
-      message.append(buf, received);
-      size_t end = message.find("\n");
+      pending.append(buf, received);
       
-      std::size_t msg_size = (end == std::string::npos) ? message.size() : end;
+      while (true) {
+        size_t pos = pending.find('\n');
+        size_t line_size = (pos == std::string::npos) ? pending.size() : pos + 1;
 
-      if (msg_size > 1024) {
-        std::cerr << "Message is too long\n";
-      break;
-      }
-
-      if (end != std::string::npos) {
-        message.resize(end);
-        completed = true;
-        break;
-      }
-    }
-
-    if (completed) {
-      std::cout << "Message from client: " << message << '\n';
-
-      const char reply[] = "hello";
-      constexpr int reply_size = sizeof(reply) - 1;
-      int total_sent = 0;
-
-      while (total_sent < reply_size) {
-        int sent = send(client_socket,
-                        reply + total_sent,
-                        reply_size - total_sent,
-                        0);
-
-        if (sent == SOCKET_ERROR) {
-          std::cerr << "Send failed: " << WSAGetLastError() << '\n';
+        if (line_size > 1024) {
+          std::cerr << "Message too long, closing connection\n";
+          connected = false;
+          break;
+        }
+        if (pos == std::string::npos) {
           break;
         }
 
-        if (sent == 0) {
-          std::cerr << "Could not send the remaining bytes\n";
-          break;
+        std::string line = pending.substr(0, pos);
+        pending.erase(0, pos + 1);
+        std::cout << "Received message: " << line << std::endl;
+
+        const char reply[] = "hello\n";
+        constexpr int reply_size = sizeof(reply) - 1;
+        int total_sent = 0;
+
+        while (total_sent < reply_size) {
+          int sent = send(client_socket,
+                          reply + total_sent,
+                          reply_size - total_sent,
+                          0);
+
+          if (sent == SOCKET_ERROR) {
+            std::cerr << "Send failed: " << WSAGetLastError() << '\n';
+            break;
+          }
+
+          if (sent == 0) {
+            std::cerr << "Could not send the remaining bytes\n";
+            break;
+          }
+
+          total_sent += sent;
         }
 
-        total_sent += sent;
-      }
-
-      if (total_sent == reply_size) {
+        if (total_sent != reply_size) {
+          connected = false;
+          break;
+        }
         std::cout << "Reply sent\n";
       }
     }
