@@ -51,6 +51,9 @@ int main(int argc, char* const argv[]) {
     }
 
     std::cout << "Client connected\n";
+
+    std::string player_name;
+    bool ready = false;
     std::string pending;
     bool connected = true;
 
@@ -93,13 +96,32 @@ int main(int argc, char* const argv[]) {
         pending.erase(0, pos + 1);
         std::cout << "Received message: " << line << std::endl;
 
-        const char reply[] = "hello\n";
-        constexpr int reply_size = sizeof(reply) - 1;
+        std::string reply;
+
+        if (line.starts_with("JOIN") && line.size() > 5) {
+          if (player_name.empty()) {
+            player_name = line.substr(5);
+            reply = "OK JOIN\n";
+          } else {
+            reply = "ERR_ALREADY_JOINED\n";
+          }
+        } else if (line == "READY") {
+          if (player_name.empty()) {
+            reply = "ERR_JOIN_FIRST\n";
+          } else {
+            ready = true;
+            reply = "OK READY\n";
+          }
+        } else {
+          reply = "ERR_UNKNOWN_COMMAND\n";
+        }
+
+        const int reply_size = static_cast<int>(reply.size());
         int total_sent = 0;
 
         while (total_sent < reply_size) {
           int sent = send(client_socket,
-                          reply + total_sent,
+                          reply.data() + total_sent,
                           reply_size - total_sent,
                           0);
 
