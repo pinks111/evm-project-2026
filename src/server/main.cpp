@@ -15,6 +15,31 @@ void handleError(bool err, const char* msg) {
   exit(EXIT_FAILURE);
 }
 
+bool send_all(SOCKET socket, const std::string& reply) {
+  const int reply_size = static_cast<int>(reply.size());
+  int total_sent = 0;
+
+  while (total_sent < reply_size) {
+    int sent = send(socket,
+                    reply.data() + total_sent,
+                    reply_size - total_sent,
+                    0);
+
+    if (sent == SOCKET_ERROR) {
+      std::cerr << "Send failed: " << WSAGetLastError() << '\n';
+      return false;
+    }
+
+    if (sent == 0) {
+      std::cerr << "Could not send the remaining bytes\n";
+      return false;
+    }
+
+    total_sent += sent;
+  }
+  return true;
+}
+
 struct Client {
   SOCKET socket = INVALID_SOCKET;
   std::string player_name;
@@ -22,10 +47,52 @@ struct Client {
   std::string pending;
 };
 
+enum class lobby_phase { WAITING, MATCH };
+
+struct Lobby {
+  std::array<Client, 2> clients{};
+  lobby_phase phase = lobby_phase::WAITING;
+
+  bool start() const {
+    if (phase != lobby_phase::WAITING) {
+      return false;
+    }
+
+    for (const auto& client : clients) {
+      if (client.socket == INVALID_SOCKET || client.player_name.empty() || !client.ready) {
+        return false;
+      }
+    }
+    return true;
+  }
+};
+
 void disconnect_client(Client& client) {
     closesocket(client.socket);
     client = Client{};
     std::cout << "Connection closed\n";
+}
+
+void remove_client(Lobby& lobby, Client& leaving) {
+    disconnect_client(leaving);
+
+    if (lobby.phase != lobby_phase::MATCH) {
+        return;
+    }
+
+    lobby.phase = lobby_phase::WAITING;
+
+    for (Client& player : lobby.clients) {
+        if (player.socket == INVALID_SOCKET) {
+            continue;
+        }
+
+        player.ready = false;
+
+        if (!send_all(player.socket, "MATCH_ABORTED\n")) {
+            disconnect_client(player);
+        }
+    }
 }
 
 int main(int argc, char* const argv[]) {
@@ -55,7 +122,7 @@ int main(int argc, char* const argv[]) {
     return 1;
   }
 
-  std::array<Client, 2> clients{};
+  Lobby lobby{};
 
   while (true) {
     std::cout << "Waiting for a client...\n";
@@ -64,7 +131,7 @@ int main(int argc, char* const argv[]) {
     FD_ZERO(&readfds);
     FD_SET(server_sock, &readfds);
 
-    for (const auto& client : clients) {
+    for (const auto& client : lobby.clients) {
       if (client.socket != INVALID_SOCKET) {
         FD_SET(client.socket, &readfds);
       }
@@ -81,9 +148,9 @@ int main(int argc, char* const argv[]) {
       if (client_socket == INVALID_SOCKET) {
         std::cerr << "Accept failed: " << WSAGetLastError() << '\n';
       } else {
-        auto it = std::find_if(clients.begin(), clients.end(),
+        auto it = std::find_if(lobby.clients.begin(), lobby.clients.end(),
                               [](const Client& c) { return c.socket == INVALID_SOCKET; });
-        if (it == clients.end()) {
+        if (it == lobby.clients.end()) {
           std::cout << "Lobby is full\n";
           closesocket(client_socket);
         } else {
@@ -92,10 +159,8 @@ int main(int argc, char* const argv[]) {
         }
       }
     }
-    
-    bool connected = true;
 
-    for (Client& client : clients) {
+    for (Client& client : lobby.clients) {
       if (client.socket == INVALID_SOCKET || !FD_ISSET(client.socket, &readfds)) {
         continue;
       }
@@ -106,8 +171,9 @@ int main(int argc, char* const argv[]) {
                           0  
                         );
       if (received == SOCKET_ERROR) {
-        std::cerr << "Receive failed: " << WSAGetLastError() << '\n';
-        disconnect_client(client);
+        const int error = WSAGetLastError();
+        std::cerr << "Receive failed: " << error << '\n';
+        remove_client(lobby, client);
         continue;
       }
       if (received == 0) {
@@ -116,12 +182,12 @@ int main(int argc, char* const argv[]) {
         } else {
           std::cout << "Client disconnected before completing the message\n";
         }
-        disconnect_client(client);
+        remove_client(lobby, client);
         continue;
       }
 
       client.pending.append(buf, received);
-      
+      bool connected = true;
       while (true) {
         size_t pos = client.pending.find('\n');
         size_t line_size = (pos == std::string::npos) ? client.pending.size() : pos;
@@ -159,36 +225,29 @@ int main(int argc, char* const argv[]) {
           reply = "ERR_UNKNOWN_COMMAND\n";
         }
 
-        const int reply_size = static_cast<int>(reply.size());
-        int total_sent = 0;
-
-        while (total_sent < reply_size) {
-          int sent = send(client.socket,
-                          reply.data() + total_sent,
-                          reply_size - total_sent,
-                          0);
-
-          if (sent == SOCKET_ERROR) {
-            std::cerr << "Send failed: " << WSAGetLastError() << '\n';
-            break;
-          }
-
-          if (sent == 0) {
-            std::cerr << "Could not send the remaining bytes\n";
-            break;
-          }
-
-          total_sent += sent;
-        }
-
-        if (total_sent != reply_size) {
+        if (!send_all(client.socket, reply)) {
           connected = false;
           break;
         }
         std::cout << "Reply sent\n";
+        if (lobby.start()) {
+          lobby.phase = lobby_phase::MATCH;
+
+          for (Client& player : lobby.clients) {
+            if (!send_all(player.socket, "MATCH_START\n")) {
+              remove_client(lobby, player);
+              break;
+            }
+          }
+
+          if (client.socket == INVALID_SOCKET) {
+            break;
+          }
+        } 
       }
+
       if (!connected) {
-        disconnect_client(client);
+        remove_client(lobby, client);
       }
     }
   }
