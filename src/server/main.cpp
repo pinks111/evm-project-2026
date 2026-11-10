@@ -2,6 +2,7 @@
 #include <iostream>
 #include <string>
 #include <algorithm>
+#include <nlohmann/json.hpp>
 #include <array>
 
 #pragma comment(lib,"ws2_32.lib")
@@ -95,6 +96,57 @@ void remove_client(Lobby& lobby, Client& leaving) {
     }
 }
 
+std::string make_state(const Lobby& lobby, int id) {
+    using nlohmann::json;
+
+    json players = json::array();
+
+    for (std::size_t i = 0; i < lobby.clients.size(); ++i) {
+        const Client& client = lobby.clients[i];
+
+        if (client.socket == INVALID_SOCKET || client.player_name.empty()) {
+            continue;
+        }
+
+        players.push_back({
+            {"id", i + 1},
+            {"name", client.player_name},
+            {"ready", client.ready}
+        });
+    }
+
+    json state = {
+        {"you", id},
+        {"players", players}
+    };
+
+    return "LOBBY_STATE " + state.dump() + "\n";
+}
+
+void send_state(Lobby& lobby) {
+  bool retry;
+
+  do {
+    retry = false;
+    for (std::size_t i = 0; i < lobby.clients.size(); ++i) {
+      Client& client = lobby.clients[i];
+
+      if (client.socket == INVALID_SOCKET ||
+        client.player_name.empty()) {
+        continue;
+      }
+
+      std::string message = make_state(lobby, static_cast<int>(i + 1));
+
+      if (!send_all(client.socket, message)) {
+        remove_client(lobby, client);
+        retry = true;
+        break;
+      }
+    }
+  } while (retry);
+}
+
 int main(int argc, char* const argv[]) {
   WSADATA wsa;
   int res = WSAStartup(MAKEWORD(2, 2), &wsa);
@@ -174,6 +226,7 @@ int main(int argc, char* const argv[]) {
         const int error = WSAGetLastError();
         std::cerr << "Receive failed: " << error << '\n';
         remove_client(lobby, client);
+        send_state(lobby);
         continue;
       }
       if (received == 0) {
@@ -183,6 +236,7 @@ int main(int argc, char* const argv[]) {
           std::cout << "Client disconnected before completing the message\n";
         }
         remove_client(lobby, client);
+        send_state(lobby);
         continue;
       }
 
@@ -206,11 +260,13 @@ int main(int argc, char* const argv[]) {
         std::cout << "Received message: " << line << std::endl;
 
         std::string reply;
+        bool lobby_changed = false;
 
         if (line.starts_with("JOIN ") && line.size() > 5) {
           if (client.player_name.empty()) {
             client.player_name = line.substr(5);
             reply = "OK JOIN\n";
+            lobby_changed = true;
           } else {
             reply = "ERR_ALREADY_JOINED\n";
           }
@@ -220,6 +276,7 @@ int main(int argc, char* const argv[]) {
           } else {
             client.ready = true;
             reply = "OK READY\n";
+            lobby_changed = true;
           }
         } else {
           reply = "ERR_UNKNOWN_COMMAND\n";
@@ -230,12 +287,22 @@ int main(int argc, char* const argv[]) {
           break;
         }
         std::cout << "Reply sent\n";
+        
+        if (lobby_changed && lobby.phase == lobby_phase::WAITING && !lobby.start()) {
+          send_state(lobby);
+        }
+
+        if (client.socket == INVALID_SOCKET) {
+          break;
+        }
+
         if (lobby.start()) {
           lobby.phase = lobby_phase::MATCH;
 
           for (Client& player : lobby.clients) {
             if (!send_all(player.socket, "MATCH_START\n")) {
               remove_client(lobby, player);
+              send_state(lobby);
               break;
             }
           }
@@ -248,6 +315,7 @@ int main(int argc, char* const argv[]) {
 
       if (!connected) {
         remove_client(lobby, client);
+        send_state(lobby);
       }
     }
   }
