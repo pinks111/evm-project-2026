@@ -16,6 +16,8 @@ struct Character {
   int y = 0;
   int health = 10;
   int dmg = 1;
+  bool can_move = true;
+  bool can_attack = true;
 };
 
 struct GameState {
@@ -26,3 +28,4 @@ struct GameState {
 };
 
 std::string make_game_state(const GameState& game_state);
+bool move(GameState& game_state, int player_id, int new_x, int new_y);

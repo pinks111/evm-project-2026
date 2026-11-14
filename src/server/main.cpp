@@ -2,6 +2,7 @@
 #include "net.hpp"
 #include "game.hpp"
 
+#include <cctype>
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
@@ -133,6 +134,7 @@ int main(int argc, char* const argv[]) {
 
         std::string reply;
         bool lobby_changed = false;
+        bool game_changed = false;
 
         // Обработка команд клиента
         if (line.starts_with("JOIN ") && line.size() > 5) {
@@ -151,6 +153,32 @@ int main(int argc, char* const argv[]) {
             reply = "OK READY\n";
             lobby_changed = true;
           }
+        } else if (line.starts_with("MOVE ")) {
+          if (lobby.phase != lobby_phase::MATCH) {
+            reply = "ERR_NOT_IN_MATCH\n";
+          } else if (line.size() != 8 || line[6] != ' ' || 
+                     !std::isdigit(static_cast<unsigned char>(line[5]))
+                     || !std::isdigit(static_cast<unsigned char>(line[7]))) {
+            reply = "ERR_INVALID_MOVE\n";
+          } else {
+            int player_id = 0;
+            for (size_t i = 0; i < lobby.clients.size(); ++i) {
+              if (&lobby.clients[i] == &client) {
+                player_id = static_cast<int>(i + 1);
+                break;
+              }
+            }
+
+            int new_x = line[5] - '0';
+            int new_y = line[7] - '0';
+
+            if (move(game_state, player_id, new_x, new_y)) {
+              reply = "OK MOVE\n";
+              game_changed = true;
+            } else {
+              reply = "ERR_INVALID_MOVE\n";
+            }
+          }
         } else {
           reply = "ERR_UNKNOWN_COMMAND\n";
         }
@@ -163,6 +191,17 @@ int main(int argc, char* const argv[]) {
         
         if (lobby_changed && lobby.phase == lobby_phase::WAITING && !lobby.start()) {
           send_state(lobby);
+        }
+
+        if (game_changed) {
+          const std::string message = make_game_state(game_state);
+          for (Client& player : lobby.clients) {
+            if (!send_all(player.socket, message)) {
+              remove_client(lobby, player);
+              send_state(lobby);
+              break;
+            }
+          }
         }
 
         if (client.socket == INVALID_SOCKET) {
