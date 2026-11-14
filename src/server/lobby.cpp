@@ -68,7 +68,7 @@ void send_state(Lobby& lobby) {
 
   do {
     retry = false;
-    for (std::size_t i = 0; i < lobby.clients.size(); ++i) {
+    for (size_t i = 0; i < lobby.clients.size(); ++i) {
       Client& client = lobby.clients[i];
 
       if (client.socket == INVALID_SOCKET ||

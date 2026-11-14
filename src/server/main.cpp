@@ -1,5 +1,6 @@
 #include "lobby.hpp"
 #include "net.hpp"
+#include "game.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -45,6 +46,7 @@ int main(int argc, char* const argv[]) {
   }
 
   Lobby lobby{};
+  GameState game_state{};
 
   while (true) {
     std::cout << "Waiting for a client...\n";
@@ -59,12 +61,12 @@ int main(int argc, char* const argv[]) {
       }
     }
 
-    if (select(0, &readfds, nullptr, nullptr, nullptr) == SOCKET_ERROR) {
+    if (select(0, &readfds, nullptr, nullptr, nullptr) == SOCKET_ERROR) { // с селекта идёт обработка сокетов(игроков)
       std::cerr << "Select failed with error: " << WSAGetLastError() << std::endl;
       break;
     }
 
-    if (FD_ISSET(server_sock, &readfds)) {
+    if (FD_ISSET(server_sock, &readfds)) { 
       std::cout << "New client connection\n";
       SOCKET client_socket = accept(server_sock, nullptr, nullptr);
       if (client_socket == INVALID_SOCKET) {
@@ -82,7 +84,7 @@ int main(int argc, char* const argv[]) {
       }
     }
 
-    for (Client& client : lobby.clients) {
+    for (Client& client : lobby.clients) { // приём сообщений от клиентов
       if (client.socket == INVALID_SOCKET || !FD_ISSET(client.socket, &readfds)) {
         continue;
       }
@@ -132,6 +134,7 @@ int main(int argc, char* const argv[]) {
         std::string reply;
         bool lobby_changed = false;
 
+        // Обработка команд клиента
         if (line.starts_with("JOIN ") && line.size() > 5) {
           if (client.player_name.empty()) {
             client.player_name = line.substr(5);
@@ -176,7 +179,22 @@ int main(int argc, char* const argv[]) {
               break;
             }
           }
-
+          
+          if (lobby.phase == lobby_phase::MATCH) { // начало матча, отправка состояния игры клиентам
+            Board board{};
+            Character player1{"Player 1", 0, 0, 10, 1};
+            Character player2{"Player 2", 4, 4, 10, 1};
+            game_state = {board, {player1, player2}, 1, false};
+            const std::string message = make_game_state(game_state);
+            for (Client& player : lobby.clients) {
+              if (!send_all(player.socket, message)) {
+                remove_client(lobby, player);
+                send_state(lobby);
+                break;
+              }
+            }
+          }
+          
           if (client.socket == INVALID_SOCKET) {
             break;
           }
