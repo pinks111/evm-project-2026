@@ -1,9 +1,10 @@
-#include<winsock2.h>
+#include "lobby.hpp"
+#include "net.hpp"
+
+#include <algorithm>
+#include <cstdlib>
 #include <iostream>
 #include <string>
-#include <algorithm>
-#include <nlohmann/json.hpp>
-#include <array>
 
 #pragma comment(lib,"ws2_32.lib")
 const int PORT = 2024;
@@ -14,137 +15,6 @@ void handleError(bool err, const char* msg) {
   }
   std::cerr << msg << WSAGetLastError() << std::endl;
   exit(EXIT_FAILURE);
-}
-
-bool send_all(SOCKET socket, const std::string& reply) {
-  const int reply_size = static_cast<int>(reply.size());
-  int total_sent = 0;
-
-  while (total_sent < reply_size) {
-    int sent = send(socket,
-                    reply.data() + total_sent,
-                    reply_size - total_sent,
-                    0);
-
-    if (sent == SOCKET_ERROR) {
-      std::cerr << "Send failed: " << WSAGetLastError() << '\n';
-      return false;
-    }
-
-    if (sent == 0) {
-      std::cerr << "Could not send the remaining bytes\n";
-      return false;
-    }
-
-    total_sent += sent;
-  }
-  return true;
-}
-
-struct Client {
-  SOCKET socket = INVALID_SOCKET;
-  std::string player_name;
-  bool ready = false;
-  std::string pending;
-};
-
-enum class lobby_phase { WAITING, MATCH };
-
-struct Lobby {
-  std::array<Client, 2> clients{};
-  lobby_phase phase = lobby_phase::WAITING;
-
-  bool start() const {
-    if (phase != lobby_phase::WAITING) {
-      return false;
-    }
-
-    for (const auto& client : clients) {
-      if (client.socket == INVALID_SOCKET || client.player_name.empty() || !client.ready) {
-        return false;
-      }
-    }
-    return true;
-  }
-};
-
-void disconnect_client(Client& client) {
-    closesocket(client.socket);
-    client = Client{};
-    std::cout << "Connection closed\n";
-}
-
-void remove_client(Lobby& lobby, Client& leaving) {
-    disconnect_client(leaving);
-
-    if (lobby.phase != lobby_phase::MATCH) {
-        return;
-    }
-
-    lobby.phase = lobby_phase::WAITING;
-
-    for (Client& player : lobby.clients) {
-        if (player.socket == INVALID_SOCKET) {
-            continue;
-        }
-
-        player.ready = false;
-
-        if (!send_all(player.socket, "MATCH_ABORTED\n")) {
-            disconnect_client(player);
-        }
-    }
-}
-
-std::string make_state(const Lobby& lobby, int id) {
-    using nlohmann::json;
-
-    json players = json::array();
-
-    for (std::size_t i = 0; i < lobby.clients.size(); ++i) {
-        const Client& client = lobby.clients[i];
-
-        if (client.socket == INVALID_SOCKET || client.player_name.empty()) {
-            continue;
-        }
-
-        players.push_back({
-            {"id", i + 1},
-            {"name", client.player_name},
-            {"ready", client.ready}
-        });
-    }
-
-    json state = {
-        {"you", id},
-        {"players", players}
-    };
-
-    return "LOBBY_STATE " + state.dump() + "\n";
-}
-
-void send_state(Lobby& lobby) {
-  bool retry;
-
-  do {
-    retry = false;
-    for (std::size_t i = 0; i < lobby.clients.size(); ++i) {
-      Client& client = lobby.clients[i];
-
-      if (client.socket == INVALID_SOCKET ||
-        client.player_name.empty()) {
-        continue;
-      }
-
-      std::string message = make_state(lobby, static_cast<int>(i + 1));
-
-      if (!send_all(client.socket, message)) {
-        remove_client(lobby, client);
-        retry = true;
-        break;
-      }
-    }
-  } while (retry);
 }
 
 int main(int argc, char* const argv[]) {
