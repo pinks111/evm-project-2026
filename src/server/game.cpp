@@ -82,3 +82,47 @@ bool move(GameState& game_state, int player_id, int new_x, int new_y) {
 
   return true;
 }
+
+bool end_turn(GameState& game_state, int player_id) {
+  if (player_id < 1 || player_id > 2 || game_state.game_over || game_state.turn != player_id) {
+    return false;
+  }
+
+  game_state.turn = (player_id == 1) ? 2 : 1;
+  Character& next = game_state.characters[game_state.turn - 1];
+  next.can_move = true;
+  next.can_attack = true;
+  return true;
+}
+
+bool attack(GameState& game_state, int player_id, int target_x, int target_y) {
+  if (player_id < 1 || player_id > 2 || game_state.game_over || game_state.turn != player_id) {
+    return false;
+  }
+
+  Character& attacker = game_state.characters[player_id - 1];
+
+  if (!attacker.can_attack) {
+    return false;
+  }
+
+  Character& target = game_state.characters[(player_id == 1) ? 1 : 0];
+
+  if (target.x != target_x || target.y != target_y) {
+    return false;
+  }
+
+  const int distance = std::abs(attacker.x - target.x) + std::abs(attacker.y - target.y);
+  if (distance != 1) {
+    return false;
+  }
+
+  target.health = std::max(0, target.health - attacker.dmg);
+  attacker.can_attack = false;
+
+  if (target.health <= 0) {
+    game_state.game_over = true;
+  }
+
+  return true;
+}

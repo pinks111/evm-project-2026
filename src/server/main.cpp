@@ -179,6 +179,50 @@ int main(int argc, char* const argv[]) {
               reply = "ERR_INVALID_MOVE\n";
             }
           }
+        } else if (line == "END_TURN") {
+          if (lobby.phase != lobby_phase::MATCH) {
+            reply = "ERR_NOT_IN_MATCH\n";
+          } else {
+              int player_id = 0;
+              for (size_t i = 0; i < lobby.clients.size(); ++i) {
+                if (&lobby.clients[i] == &client) {
+                  player_id = static_cast<int>(i + 1);
+                  break;
+                }
+              }
+            if (end_turn(game_state, player_id)) {
+              reply = "OK END_TURN\n";
+              game_changed = true;
+            } else {
+              reply = "ERR_NOT_YOUR_TURN\n";
+            }
+          }
+        } else if (line.starts_with("ATTACK ")) {
+          if (lobby.phase != lobby_phase::MATCH) {
+            reply = "ERR_NOT_IN_MATCH\n";
+          } else if (line.size() != 10 || line[8] != ' ' || 
+                     !std::isdigit(static_cast<unsigned char>(line[7]))
+                     || !std::isdigit(static_cast<unsigned char>(line[9]))) {
+            reply = "ERR_INVALID_ATTACK\n";
+          } else {
+            int player_id = 0;
+            for (size_t i = 0; i < lobby.clients.size(); ++i) {
+              if (&lobby.clients[i] == &client) {
+                player_id = static_cast<int>(i + 1);
+                break;
+              }
+            }
+
+            int target_x = line[7] - '0';
+            int target_y = line[9] - '0';
+
+            if (attack(game_state, player_id, target_x, target_y)) {
+              reply = "OK ATTACK\n";
+              game_changed = true;
+            } else {
+              reply = "ERR_INVALID_ATTACK\n";
+            }
+          }
         } else {
           reply = "ERR_UNKNOWN_COMMAND\n";
         }
@@ -212,14 +256,14 @@ int main(int argc, char* const argv[]) {
           lobby.phase = lobby_phase::MATCH;
 
           for (Client& player : lobby.clients) {
-            if (!send_all(player.socket, "MATCH_START\n")) {
+            if (!send_all(player.socket, "MATCH_START\n")) {  // начало матча, отправка состояния игры клиентам
               remove_client(lobby, player);
               send_state(lobby);
               break;
             }
           }
           
-          if (lobby.phase == lobby_phase::MATCH) { // начало матча, отправка состояния игры клиентам
+          if (lobby.phase == lobby_phase::MATCH) { // инициализация состояния игры
             Board board{};
             Character player1{"Player 1", 0, 0, 10, 1};
             Character player2{"Player 2", 4, 4, 10, 1};

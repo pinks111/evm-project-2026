@@ -29,3 +29,5 @@ struct GameState {
 
 std::string make_game_state(const GameState& game_state);
 bool move(GameState& game_state, int player_id, int new_x, int new_y);
+bool end_turn(GameState& game_state, int player_id);
+bool attack(GameState& game_state, int player_id, int target_x, int target_y);
