@@ -246,6 +246,18 @@ int main(int argc, char* const argv[]) {
               break;
             }
           }
+          if (lobby.phase == lobby_phase::MATCH && game_state.game_over) {
+            const std::string result = "GAME_OVER " + std::to_string(game_state.turn) + "\n";
+            lobby.phase = lobby_phase::WAITING;
+
+            for (Client& player : lobby.clients) {
+              player.ready = false;
+              if (!send_all(player.socket, result)) {
+                remove_client(lobby, player);
+              }
+            }
+            send_state(lobby);
+          }
         }
 
         if (client.socket == INVALID_SOCKET) {

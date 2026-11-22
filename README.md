@@ -23,6 +23,33 @@
 
 Такой подход позволяет изучить жизненный цикл соединения и избежать расхождений, когда каждый клиент самостоятельно рассчитывает бой. Формат сообщений и порядок разработки описаны в плане.
 
+## Сборка и тесты на Windows
+
+Понадобятся PowerShell и `g++` с поддержкой C++20 (например, из MinGW-w64). Заголовок `nlohmann/json` уже лежит в `third_party`.
+
+В первом PowerShell из корня репозитория собери и запусти сервер:
+
+```powershell
+g++ -std=c++20 -Ithird_party src/server/main.cpp src/server/net.cpp src/server/lobby.cpp src/server/game.cpp -o server.exe -lws2_32
+if ($LASTEXITCODE -eq 0) { .\server.exe }
+```
+
+Сервер слушает порт `2024`. Оставь его запущенным и во втором PowerShell из корня репозитория выполни тесты по очереди:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File ".\tests\end-turn.ps1"
+powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File ".\tests\attack.ps1"
+powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File ".\tests\game-over.ps1"
+```
+
+Каждый скрипт сам подключает двух тестовых игроков к `127.0.0.1:2024`. Собирать клиент отдельно для этих проверок не нужно.
+
+- [end-turn.ps1](tests/end-turn.ps1) проверяет передачу хода и восстановление действий.
+- [attack.ps1](tests/attack.ps1) проверяет урон, синхронизацию HP и ограничения на атаку.
+- [game-over.ps1](tests/game-over.ps1) проверяет победу, возврат в лобби и повторный матч на тех же подключениях.
+
+При успехе скрипт выводит `tests passed`. Остановить сервер можно через **Ctrl+C** в первом терминале.
+
 ## Развитие после MVP
 
 Исходная игровая идея шире минимальной версии. Возможные дополнения, в порядке обсуждения:
