@@ -1,2 +1,9 @@
-g++ -std=c++20 graphics/raylib_basic_window.cpp -Isrc -Isrc/utils -Iraylib/include -o raylib_basic_window.exe raylib/lib/libraylibdll.a
+g++ -std=c++20 -municode graphics\raylib_basic_window.cpp graphics\client_network.cpp src\client\client_state.cpp -Isrc -Isrc\utils -Ithird_party -Iraylib\include -o raylib_basic_window.exe raylib\lib\libraylibdll.a -lws2_32
 .\raylib_basic_window.exe
+
+Сначала закрой старые окна клиентов, перезапусти сервер по инструкции в README.md и запусти два окна клиента:
+
+.\raylib_basic_window.exe Artem
+.\raylib_basic_window.exe Nikita
+
+В каждом окне нажми R, чтобы отправить READY. После MATCH_START ЛКМ по клетке отправляет MOVE, ПКМ по соседнему противнику — ATTACK, T передаёт ход. [YOU] отмечает своего игрока, [TURN] — текущего. При запуске без аргумента введи ник в окне и нажми Enter.

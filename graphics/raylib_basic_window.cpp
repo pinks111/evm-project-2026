@@ -3,238 +3,213 @@
 #include "common/protocol.hpp"
 #include "client/client_state.hpp"
 
+#include <algorithm>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
-int main(int argc, char* argv[])
-{
-    const int screenWidth = 800;
-    const int screenHeight = 450;
-    const std::string nickname = argc > 1 ? argv[1] : "Artem";
-  
-    InitWindow(screenWidth, screenHeight, "raylib basic window");
-    SetTargetFPS(60);
+static Font load_name_font() {
+  const char* windows = std::getenv("WINDIR");
+  if (!windows) {
+    return GetFontDefault();
+  }
 
-    const int cell_size = 64;
-    const int offset = 40;
+  const std::string path = std::string(windows) + "/Fonts/segoeui.ttf";
+  std::vector<int> glyphs;
+  for (int ch = 32; ch <= 126; ++ch) glyphs.push_back(ch);
+  for (int ch = 0x400; ch <= 0x4ff; ++ch) glyphs.push_back(ch);
+  return LoadFontEx(path.c_str(), 24, glyphs.data(), static_cast<int>(glyphs.size()));
+}
 
-    int selected_x = -1;
-    int selected_y = -1;
-
-    SOCKET clientSocket = INVALID_SOCKET;
-    std::string networkError;
-    std::string status = "Connecting to 127.0.0.1:2024...";
-    std::string serverPending;
-    LobbyState lobby{};
-    bool joined = false;
-    bool readySent = false;
-    bool matchActive = false;
-
-    const bool networkStarted = open_client_connection(clientSocket, networkError);
-    if (networkStarted) {
-      status = "Connected. Sending JOIN...";
-      if (send_all(clientSocket, "JOIN " + nickname + "\n", networkError)) {
-        status = "JOIN sent. Waiting for server.";
-      } else {
-        status = networkError;
-        close_client_connection(clientSocket);
+static std::string read_nickname(Font font, const wchar_t* argument) {
+  std::string name;
+  if (argument) {
+    int size = WideCharToMultiByte(CP_UTF8, 0, argument, -1, nullptr, 0, nullptr, nullptr);
+    if (size > 0) {
+      name.resize(size);
+      WideCharToMultiByte(CP_UTF8, 0, argument, -1, name.data(), size, nullptr, nullptr);
+      name.pop_back();
+    }
+    if (name.find_first_not_of(' ') != std::string::npos && name.size() <= 1019 &&
+      name.find_first_of("\r\n") == std::string::npos) {
+      return name;
+    }
+    name.clear();
+  }
+  while (!WindowShouldClose()) {
+    for (int ch = GetCharPressed(); ch; ch = GetCharPressed()) {
+      int bytes = 0;
+      const char* encoded = CodepointToUTF8(ch, &bytes);
+      if (ch >= 32 && name.size() + bytes <= 1019) {
+        name.append(encoded, bytes);
       }
-    } else {
-      status = networkError;
+    }
+    if (IsKeyPressed(KEY_BACKSPACE) && !name.empty()) {
+      size_t i = name.size() - 1;
+      while (i > 0 && (static_cast<unsigned char>(name[i]) & 0xc0) == 0x80) --i;
+      name.erase(i);
+    }
+    if (IsKeyPressed(KEY_ENTER) && name.find_first_not_of(' ') != std::string::npos) {
+      return name;
+    }
+    BeginDrawing();
+    ClearBackground(RAYWHITE);
+    DrawText("Enter your nickname and press Enter", 40, 40, 20, DARKGRAY);
+    DrawTextEx(font, name.c_str(), {40, 80}, 24, 1, BLACK);
+    EndDrawing();
+  }
+  return {};
+}
+
+int wmain(int argc, wchar_t* argv[]) {
+  InitWindow(800, 450, "ToDA 3");
+  SetTargetFPS(60);
+  Font name_font = load_name_font();
+  const std::string nickname = read_nickname(name_font, argc > 1 ? argv[1] : nullptr);
+  constexpr int cell_size = 64;
+  constexpr int offset = 40;
+
+  SOCKET client_socket = INVALID_SOCKET;
+  std::string status, server_pending;
+  LobbyState lobby{};
+  GameState game{};
+  bool ready_sent = false;
+  bool match_active = false;
+  int selected_x = -1, selected_y = -1;
+  const bool network_started = !nickname.empty() && open_client_connection(client_socket, status);
+  auto send_command = [&](const std::string& command) {
+    if (!send_all(client_socket, command + "\n", status)) {
+      close_client_connection(client_socket);
+      return false;
+    }
+    return true;
+  };
+  if (network_started && send_command("JOIN " + nickname)) {
+    status = "Joining lobby...";
+  }
+
+  while (!nickname.empty() && !WindowShouldClose()) {
+    if (client_socket != INVALID_SOCKET) {
+      std::vector<std::string> lines;
+      bool disconnected = false;
+      if (!receive_available(client_socket, server_pending, lines, disconnected, status) || disconnected) {
+        if (disconnected) {
+          status = "Server disconnected";
+        }
+        close_client_connection(client_socket);
+      }
+      for (const auto& line : lines) {
+        if (line.starts_with("LOBBY_STATE ")) {
+          if (!parseLobbyState(line.substr(12), lobby)) {
+            status = "Invalid lobby state";
+          }
+        } else if (line == "MATCH_START") {
+          match_active = true;
+          game = {};
+          selected_x = -1;
+          status = "Match started";
+        } else if (line.starts_with("GAME_STATE ")) {
+          if (!parseGameState(line.substr(11), game)) {
+            status = "Invalid game state";
+          }
+        } else if (line.starts_with("GAME_OVER ") || line == "MATCH_ABORTED") {
+          match_active = false;
+          ready_sent = false;
+          status = line == "MATCH_ABORTED" ? "Opponent disconnected" :
+            line.substr(10) == std::to_string(lobby.playerId) ? "You won!" : "You lost.";
+        } else {
+          status = formatServerResponse(line);
+        }
+      }
+    }
+    const bool online = client_socket != INVALID_SOCKET;
+    if (online && !match_active && lobby.playerId && !ready_sent && IsKeyPressed(KEY_R)) {
+      ready_sent = send_command("READY");
+    }
+    if (online && match_active && IsKeyPressed(KEY_T) &&
+      validateBattleCommand("END_TURN", lobby, game, match_active, status)) {
+      send_command("END_TURN");
     }
 
-    // состояние игры
-    GameState game_state;
-    game_state.width = 5;
-    game_state.height = 5;
-    game_state.players = {
-        {1, {0, 0}, 10},
-        {2, {4, 4}, 10}
-    };
-    game_state.turn = 1; // ход игрока 1
-
-    while (!WindowShouldClose())
-    {
-        if (clientSocket != INVALID_SOCKET) {
-          std::vector<std::string> lines;
-          bool disconnected = false;
-          if (!receive_available(
-                clientSocket,
-                serverPending,
-                lines,
-                disconnected,
-                networkError)) {
-            status = networkError;
-            close_client_connection(clientSocket);
-          } else if (disconnected) {
-            status = "Server disconnected";
-            close_client_connection(clientSocket);
-          } else {
-            for (const std::string& line : lines) {
-              if (line == "OK JOIN") {
-                joined = true;
-                status = "Joined. Press R when ready.";
-              } else if (line == "OK READY") {
-                status = "Ready. Waiting for the other player.";
-              } else if (line.rfind("LOBBY_STATE ", 0) == 0) {
-                if (parseLobbyState(line.substr(12), lobby)) {
-                  status = "Lobby updated. Press R to ready.";
-                } else {
-                  status = "Invalid LOBBY_STATE from server";
-                }
-              } else if (line == "MATCH_START") {
-                matchActive = true;
-                status = "Match started";
-              } else if (line.rfind("GAME_STATE ", 0) == 0) {
-                if (parseGameState(line.substr(11), game_state)) {
-                  status = "Game state updated";
-                } else {
-                  status = "Invalid GAME_STATE from server";
-                }
-              } else if (line.rfind("GAME_OVER ", 0) == 0) {
-                matchActive = false;
-                readySent = false;
-                status = "Game over. Press R for another match.";
-              } else if (line == "MATCH_ABORTED") {
-                matchActive = false;
-                readySent = false;
-                status = "Match aborted: opponent disconnected";
-              } else if (line.rfind("OK ", 0) == 0 || line.rfind("ERR_", 0) == 0) {
-                status = formatServerResponse(line);
-              } else if (!line.empty()) {
-                status = "Server: " + line;
-              }
-            }
-          }
+    const int mx = GetMouseX() - offset, my = GetMouseY() - offset;
+    const bool over_board = match_active && mx >= 0 && my >= 0 &&
+      mx < game.width * cell_size && my < game.height * cell_size;
+    const int x = mx / cell_size, y = my / cell_size;
+    if (online && over_board) {
+      const bool attack = IsMouseButtonPressed(MOUSE_BUTTON_RIGHT);
+      if (attack || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        selected_x = x;
+        selected_y = y;
+        const std::string action = attack ? "ATTACK " : "MOVE ";
+        const std::string command = action + std::to_string(x) + " " + std::to_string(y);
+        if (validateBattleCommand(command, lobby, game, match_active, status)) {
+          send_command(command);
         }
-
-        if (IsKeyPressed(KEY_R) && clientSocket != INVALID_SOCKET && joined
-            && !readySent && !matchActive) {
-          if (send_all(clientSocket, "READY\n", networkError)) {
-            readySent = true;
-            status = "READY sent. Waiting for the other player.";
-          } else {
-            status = networkError;
-            close_client_connection(clientSocket);
-          }
-        }
-
-        if (IsKeyPressed(KEY_T) && clientSocket != INVALID_SOCKET) {
-          if (!matchActive) {
-            status = "Wait for MATCH_START before ending the turn";
-          } else if (lobby.playerId == 0 || game_state.turn != lobby.playerId) {
-            status = "It is not your turn";
-          } else if (send_all(clientSocket, "END_TURN\n", networkError)) {
-            status = "END_TURN sent. Waiting for server state.";
-          } else {
-            status = networkError;
-            close_client_connection(clientSocket);
-          }
-        }
-
-        BeginDrawing();
-        ClearBackground(RAYWHITE);
-        // выделение клетки при наведении мыши
-        int mouse_x = GetMouseX();
-        int mouse_y = GetMouseY();
-        if ((mouse_x >= 40 && mouse_x < 360) && (mouse_y >= 40 && mouse_y < 360)) {
-          int cell_x = (mouse_x - offset) / cell_size;
-          int cell_y = (mouse_y - offset) / cell_size;
-          if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-            selected_x = cell_x;
-            selected_y = cell_y;
-            if (!matchActive) {
-              status = "Wait for MATCH_START before moving";
-            } else if (lobby.playerId == 0) {
-              status = "Waiting for your player ID from server";
-            } else if (game_state.turn != lobby.playerId) {
-              status = TextFormat(
-                "Not your turn: P%d has the turn",
-                game_state.turn);
-            } else if (!game_state.canMove) {
-              status = "You have already moved this turn";
-            } else if (clientSocket != INVALID_SOCKET) {
-              const std::string command =
-                  "MOVE " + std::to_string(cell_x) + " "
-                  + std::to_string(cell_y) + "\n";
-              if (send_all(clientSocket, command, networkError)) {
-                status = "MOVE sent. Waiting for server state.";
-              } else {
-                status = networkError;
-                close_client_connection(clientSocket);
-              }
-            }
-          }
-          DrawRectangleLinesEx(
-            Rectangle{
-              static_cast<float>(offset + cell_x * cell_size),
-              static_cast<float>(offset + cell_y * cell_size),
-              static_cast<float>(cell_size),
-              static_cast<float>(cell_size)
-            },
-            3.0f,
-            GREEN);
-          if (selected_x != -1 && selected_y != -1) {
-            DrawRectangleLinesEx(
-              Rectangle{
-                static_cast<float>(offset + selected_x * cell_size),
-                static_cast<float>(offset + selected_y * cell_size),
-                static_cast<float>(cell_size),
-                static_cast<float>(cell_size)
-              },
-              3.0f,
-              ORANGE);
-            DrawText(TextFormat("MOVE: (%d, %d)", selected_x, selected_y), 40, 400, 20, BLACK);
-          }
-        }
-        // поле
-        for (int y = 0; y < 5; ++y) {
-          for (int x = 0; x < 5; ++x) {
-            DrawRectangleLines(offset + x * cell_size, offset + y * cell_size, cell_size, cell_size, LIGHTGRAY);
-          }
-        }
-        // игроки и информация о них
-        int player_row = 0;
-        for (const auto& player : game_state.players) {
-          const bool is_first_player = player.id == 1;
-          DrawCircle(
-            offset + player.position.x * cell_size + cell_size / 2,
-            offset + player.position.y * cell_size + cell_size / 2,
-            cell_size / 2 - 5,
-            is_first_player ? RED : BLUE);
-          const std::string* playerName = nullptr;
-          for (const auto& lobbyPlayer : lobby.players) {
-            if (lobbyPlayer.id == player.id) {
-              playerName = &lobbyPlayer.name;
-              break;
-            }
-          }
-          DrawText(
-            TextFormat(
-              "%s (%s): HP: %d%s%s",
-              playerName ? playerName->c_str() : (is_first_player ? "ARTEM" : "NIKITA"),
-              is_first_player ? "RED" : "BLUE",
-              player.hp,
-              player.id == game_state.turn ? " [TURN]" : "",
-              player.id == lobby.playerId ? " [YOU]" : ""),
-            offset + game_state.width * cell_size + 24,
-            offset + player_row * 30,
-            20,
-            BLACK);
-          ++player_row;
-        }
-        DrawText(status.c_str(), offset + game_state.width * cell_size + 24, 100, 16, BLACK);
-        DrawText("Press R to ready", offset + game_state.width * cell_size + 24, 130, 16, DARKGRAY);
-        DrawText("Press T to end turn", offset + game_state.width * cell_size + 24, 160, 16, DARKGRAY);
-        DrawText(TextFormat("YOU: P%d", lobby.playerId), offset + game_state.width * cell_size + 24, 190, 16, DARKGRAY);
-        DrawText(TextFormat("TURN: P%d", game_state.turn), offset + game_state.width * cell_size + 24, 220, 16, DARKGRAY);
-        EndDrawing();
+      }
     }
-  
-    close_client_connection(clientSocket);
-    if (networkStarted) {
-      cleanup_client_network();
+
+    BeginDrawing();
+    ClearBackground(RAYWHITE);
+    int panel = offset;
+    if (match_active) {
+      panel += game.width * cell_size + 24;
+      for (int row = 0; row < game.height; ++row)
+        for (int col = 0; col < game.width; ++col)
+          DrawRectangleLines(offset + col * cell_size, offset + row * cell_size,
+                               cell_size, cell_size, LIGHTGRAY);
+      auto outline = [&](int col, int row, Color color) {
+        DrawRectangleLinesEx({float(offset + col * cell_size), float(offset + row * cell_size),
+                              float(cell_size), float(cell_size)}, 3, color);
+      };
+      if (over_board) {
+        outline(x, y, GREEN);
+      }
+      if (selected_x >= 0) {
+        outline(selected_x, selected_y, ORANGE);
+        DrawText(TextFormat("Cell: (%d, %d)", selected_x, selected_y), offset, 400, 20, BLACK);
+      }
+      for (const auto& player : game.players)
+        DrawCircle(offset + player.position.x * cell_size + cell_size / 2,
+                   offset + player.position.y * cell_size + cell_size / 2,
+                   cell_size / 2 - 5, player.id == 1 ? RED : BLUE);
     }
-    CloseWindow();
-    return 0;
+    int row_y = offset;
+    for (const auto& member : lobby.players) {
+      std::string label = member.name + (member.id == 1 ? " (RED)" : " (BLUE)");
+      if (match_active) {
+        auto player = std::find_if(game.players.begin(), game.players.end(),
+          [&](const auto& p) { return p.id == member.id; });
+        if (player != game.players.end()) {
+          label += ": HP: " + std::to_string(player->hp);
+        }
+        if (game.turn == member.id) {
+          label += " [TURN]";
+        }
+      } else if (member.ready) {
+        label += " [READY]";
+      }
+      if (member.id == lobby.playerId) {
+        label += " [YOU]";
+      }
+      DrawTextEx(name_font, label.c_str(), {float(panel), float(row_y)}, 20, 1, BLACK);
+      row_y += 30;
+    }
+    DrawText(status.c_str(), panel, 115, 16, DARKGRAY);
+    if (online && match_active) {
+      DrawText("Left click: move   Right click: attack", panel, 150, 16, BLACK);
+      DrawText("T: end turn", panel, 180, 16, BLACK);
+    } else if (online && lobby.playerId) {
+      DrawText(ready_sent ? "Waiting for opponent..." : "R: ready", panel, 150, 16, BLACK);
+    }
+    EndDrawing();
+  }
+  close_client_connection(client_socket);
+  if (network_started) {
+    cleanup_client_network();
+  }
+  if (name_font.texture.id != GetFontDefault().texture.id) {
+    UnloadFont(name_font);
+  }
+  CloseWindow();
+  return 0;
 }
