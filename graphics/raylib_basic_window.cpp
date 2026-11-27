@@ -66,6 +66,7 @@ int wmain(int argc, wchar_t* argv[]) {
   SetTargetFPS(60);
   Font name_font = load_name_font();
   const std::string nickname = read_nickname(name_font, argc > 1 ? argv[1] : nullptr);
+  const wchar_t* server_ip = argc > 2 ? argv[2] : L"127.0.0.1";
   constexpr int cell_size = 64;
   constexpr int offset = 40;
 
@@ -76,7 +77,7 @@ int wmain(int argc, wchar_t* argv[]) {
   bool ready_sent = false;
   bool match_active = false;
   int selected_x = -1, selected_y = -1;
-  const bool network_started = !nickname.empty() && open_client_connection(client_socket, status);
+  const bool network_started = !nickname.empty() && open_client_connection(client_socket, server_ip, status);
   auto send_command = [&](const std::string& command) {
     if (!send_all(client_socket, command + "\n", status)) {
       close_client_connection(client_socket);

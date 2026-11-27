@@ -1,41 +1,40 @@
 #include "client_network.hpp"
+#include <ws2tcpip.h>
 
 #include <array>
 #include <utility>
 
-bool open_client_connection(SOCKET& clientSocket, std::string& error)
-{
-    WSADATA winsockData{};
-    const int startupResult = WSAStartup(MAKEWORD(2, 2), &winsockData);
-    if (startupResult != 0) {
-        error = "WSAStartup failed: " + std::to_string(startupResult);
-        return false;
-    }
+bool open_client_connection(SOCKET& client_socket, const wchar_t* server_ip, std::string& error) {
+  WSADATA winsock_data{};
+  const int startup_result = WSAStartup(MAKEWORD(2, 2), &winsock_data);
+  if (startup_result != 0) {
+    error = "WSAStartup failed: " + std::to_string(startup_result);
+    return false;
+  }
 
-    clientSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (clientSocket == INVALID_SOCKET) {
-        error = "Socket creation failed: " + std::to_string(WSAGetLastError());
-        WSACleanup();
-        return false;
-    }
+  sockaddr_in server_address{};
+  server_address.sin_family = AF_INET;
+  server_address.sin_port = htons(2024);
+  if (InetPtonW(AF_INET, server_ip, &server_address.sin_addr) != 1) {
+    error = "Invalid server IPv4 address";
+    WSACleanup();
+    return false;
+  }
 
-    sockaddr_in serverAddress{};
-    serverAddress.sin_family = AF_INET;
-    serverAddress.sin_port = htons(2024);
-    serverAddress.sin_addr.s_addr = inet_addr("127.0.0.1");
-
-    if (connect(
-            clientSocket,
-            reinterpret_cast<sockaddr*>(&serverAddress),
-            sizeof(serverAddress)
-        ) == SOCKET_ERROR) {
-        error = "Connection failed: " + std::to_string(WSAGetLastError());
-        close_client_connection(clientSocket);
-        WSACleanup();
-        return false;
-    }
-
-    return true;
+  client_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (client_socket == INVALID_SOCKET) {
+    error = "Socket creation failed: " + std::to_string(WSAGetLastError());
+    WSACleanup();
+    return false;
+  }
+  if (connect(client_socket, reinterpret_cast<sockaddr*>(&server_address),
+              sizeof(server_address)) == SOCKET_ERROR) {
+    error = "Connection failed: " + std::to_string(WSAGetLastError());
+    close_client_connection(client_socket);
+    WSACleanup();
+    return false;
+  }
+  return true;
 }
 
 bool send_all(SOCKET clientSocket, const std::string& message, std::string& error)

@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-bool open_client_connection(SOCKET& clientSocket, std::string& error);
+bool open_client_connection(SOCKET& client_socket, const wchar_t* server_ip, std::string& error);
 bool send_all(SOCKET clientSocket, const std::string& message, std::string& error);
 bool receive_available(
     SOCKET clientSocket,
