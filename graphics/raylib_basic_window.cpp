@@ -64,6 +64,8 @@ static std::string read_nickname(Font font, const wchar_t* argument) {
 int wmain(int argc, wchar_t* argv[]) {
   InitWindow(800, 450, "ToDA 3");
   SetTargetFPS(60);
+  InitAudioDevice();
+  Music music = LoadMusicStream("music/music.mp3");
   Font name_font = load_name_font();
   const std::string nickname = read_nickname(name_font, argc > 1 ? argv[1] : nullptr);
   const wchar_t* server_ip = argc > 2 ? argv[2] : L"127.0.0.1";
@@ -105,6 +107,7 @@ int wmain(int argc, wchar_t* argv[]) {
             status = "Invalid lobby state";
           }
         } else if (line == "MATCH_START") {
+          PlayMusicStream(music);
           match_active = true;
           game = {};
           selected_x = -1;
@@ -114,6 +117,7 @@ int wmain(int argc, wchar_t* argv[]) {
             status = "Invalid game state";
           }
         } else if (line.starts_with("GAME_OVER ") || line == "MATCH_ABORTED") {
+          StopMusicStream(music);
           match_active = false;
           ready_sent = false;
           status = line == "MATCH_ABORTED" ? "Opponent disconnected" :
@@ -149,6 +153,11 @@ int wmain(int argc, wchar_t* argv[]) {
       }
     }
 
+    if (match_active && client_socket != INVALID_SOCKET) {
+      UpdateMusicStream(music);
+    } else if (IsMusicStreamPlaying(music)) {
+      StopMusicStream(music);
+    }
     BeginDrawing();
     ClearBackground(RAYWHITE);
     int panel = offset;
@@ -211,6 +220,8 @@ int wmain(int argc, wchar_t* argv[]) {
   if (name_font.texture.id != GetFontDefault().texture.id) {
     UnloadFont(name_font);
   }
+  UnloadMusicStream(music);
+  CloseAudioDevice();
   CloseWindow();
   return 0;
 }
