@@ -21,15 +21,10 @@ static Font load_name_font() {
   return LoadFontEx(path.c_str(), 24, glyphs.data(), static_cast<int>(glyphs.size()));
 }
 
-static std::string read_nickname(Font font, const wchar_t* argument) {
+static std::string read_nickname(Font font, const char* argument) {
   std::string name;
   if (argument) {
-    int size = WideCharToMultiByte(CP_UTF8, 0, argument, -1, nullptr, 0, nullptr, nullptr);
-    if (size > 0) {
-      name.resize(size);
-      WideCharToMultiByte(CP_UTF8, 0, argument, -1, name.data(), size, nullptr, nullptr);
-      name.pop_back();
-    }
+    name = argument;
     if (name.find_first_not_of(' ') != std::string::npos && name.size() <= 1019 &&
       name.find_first_of("\r\n") == std::string::npos) {
       return name;
@@ -61,14 +56,14 @@ static std::string read_nickname(Font font, const wchar_t* argument) {
   return {};
 }
 
-int wmain(int argc, wchar_t* argv[]) {
+int main(int argc, char* argv[]) {
   InitWindow(800, 450, "ToDA 3");
   SetTargetFPS(60);
   InitAudioDevice();
   Music music = LoadMusicStream("music/music.mp3");
   Font name_font = load_name_font();
   const std::string nickname = read_nickname(name_font, argc > 1 ? argv[1] : nullptr);
-  const wchar_t* server_ip = argc > 2 ? argv[2] : L"127.0.0.1";
+  const std::string server_ip = argc > 2 ? argv[2] : "127.0.0.1";
   constexpr int cell_size = 64;
   constexpr int offset = 40;
 
@@ -79,7 +74,8 @@ int wmain(int argc, wchar_t* argv[]) {
   bool ready_sent = false;
   bool match_active = false;
   int selected_x = -1, selected_y = -1;
-  const bool network_started = !nickname.empty() && open_client_connection(client_socket, server_ip, status);
+  const bool network_started = !nickname.empty() &&
+    open_client_connection(client_socket, server_ip, status);
   auto send_command = [&](const std::string& command) {
     if (!send_all(client_socket, command + "\n", status)) {
       close_client_connection(client_socket);

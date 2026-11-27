@@ -1,54 +1,89 @@
 #include "client_network.hpp"
-#include <ws2tcpip.h>
 
 #include <array>
+#include <cerrno>
 #include <utility>
 
-bool open_client_connection(SOCKET& client_socket, const wchar_t* server_ip, std::string& error) {
-  WSADATA winsock_data{};
-  const int startup_result = WSAStartup(MAKEWORD(2, 2), &winsock_data);
-  if (startup_result != 0) {
-    error = "WSAStartup failed: " + std::to_string(startup_result);
-    return false;
-  }
+bool open_client_connection(
+    ClientSocket& clientSocket,
+    const std::string& serverHost,
+    std::string& error
+)
+{
+    const int startupResult = initialize_socket_runtime();
+    if (startupResult != 0) {
+        error = "Socket initialization failed: "
+            + std::to_string(startupResult);
+        return false;
+    }
 
-  sockaddr_in server_address{};
-  server_address.sin_family = AF_INET;
-  server_address.sin_port = htons(2024);
-  if (InetPtonW(AF_INET, server_ip, &server_address.sin_addr) != 1) {
-    error = "Invalid server IPv4 address";
-    WSACleanup();
-    return false;
-  }
+    clientSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (clientSocket == INVALID_CLIENT_SOCKET) {
+        error = "Socket creation failed: "
+            + std::to_string(socket_last_error());
+        cleanup_socket_runtime();
+        return false;
+    }
 
-  client_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-  if (client_socket == INVALID_SOCKET) {
-    error = "Socket creation failed: " + std::to_string(WSAGetLastError());
-    WSACleanup();
-    return false;
-  }
-  if (connect(client_socket, reinterpret_cast<sockaddr*>(&server_address),
-              sizeof(server_address)) == SOCKET_ERROR) {
-    error = "Connection failed: " + std::to_string(WSAGetLastError());
-    close_client_connection(client_socket);
-    WSACleanup();
-    return false;
-  }
-  return true;
+#ifdef SO_NOSIGPIPE
+    if (!configure_socket_no_sigpipe(clientSocket)) {
+        error = "Could not configure socket: "
+            + std::to_string(socket_last_error());
+        close_client_connection(clientSocket);
+        cleanup_socket_runtime();
+        return false;
+    }
+#endif
+
+    sockaddr_in serverAddress{};
+    serverAddress.sin_family = AF_INET;
+    serverAddress.sin_port = htons(2024);
+    if (inet_pton(AF_INET, serverHost.c_str(), &serverAddress.sin_addr) != 1) {
+        error = "Invalid server IPv4 address: " + serverHost;
+        close_client_connection(clientSocket);
+        cleanup_socket_runtime();
+        return false;
+    }
+
+    if (connect(
+            clientSocket,
+            reinterpret_cast<sockaddr*>(&serverAddress),
+            sizeof(serverAddress)
+        ) < 0) {
+        error = "Connection failed: "
+            + std::to_string(socket_last_error());
+        close_client_connection(clientSocket);
+        cleanup_socket_runtime();
+        return false;
+    }
+
+    return true;
 }
 
-bool send_all(SOCKET clientSocket, const std::string& message, std::string& error)
+bool send_all(
+    ClientSocket clientSocket,
+    const std::string& message,
+    std::string& error
+)
 {
     std::size_t totalSent = 0;
     while (totalSent < message.size()) {
-        const int sent = send(
+        const std::ptrdiff_t sent = send_socket(
             clientSocket,
             message.data() + totalSent,
-            static_cast<int>(message.size() - totalSent),
-            0
+            message.size() - totalSent
         );
-        if (sent == SOCKET_ERROR) {
-            error = "Send failed: " + std::to_string(WSAGetLastError());
+        if (sent < 0) {
+#ifdef _WIN32
+            if (socket_last_error() == WSAEINTR) {
+                continue;
+            }
+#else
+            if (errno == EINTR) {
+                continue;
+            }
+#endif
+            error = "Send failed: " + std::to_string(socket_last_error());
             return false;
         }
         if (sent == 0) {
@@ -61,7 +96,7 @@ bool send_all(SOCKET clientSocket, const std::string& message, std::string& erro
 }
 
 bool receive_available(
-    SOCKET clientSocket,
+    ClientSocket clientSocket,
     std::string& pending,
     std::vector<std::string>& lines,
     bool& disconnected,
@@ -73,9 +108,18 @@ bool receive_available(
     FD_SET(clientSocket, &readSet);
     timeval timeout{};
 
-    const int ready = select(0, &readSet, nullptr, nullptr, &timeout);
-    if (ready == SOCKET_ERROR) {
-        error = "Select failed: " + std::to_string(WSAGetLastError());
+    const int ready = wait_for_socket(clientSocket, &readSet, &timeout);
+    if (ready < 0) {
+#ifdef _WIN32
+        if (socket_last_error() == WSAEINTR) {
+            return true;
+        }
+#else
+        if (errno == EINTR) {
+            return true;
+        }
+#endif
+        error = "Select failed: " + std::to_string(socket_last_error());
         return false;
     }
     if (ready == 0) {
@@ -83,18 +127,21 @@ bool receive_available(
     }
 
     std::array<char, 1024> buffer{};
-    const int received = recv(
-        clientSocket,
-        buffer.data(),
-        static_cast<int>(buffer.size()),
-        0
-    );
-    if (received == SOCKET_ERROR) {
-        const int socketError = WSAGetLastError();
+    const std::ptrdiff_t received =
+        receive_socket(clientSocket, buffer.data(), buffer.size());
+    if (received < 0) {
+#ifdef _WIN32
+        const int socketError = socket_last_error();
         if (socketError == WSAEWOULDBLOCK) {
             return true;
         }
         error = "Receive failed: " + std::to_string(socketError);
+#else
+        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+            return true;
+        }
+        error = "Receive failed: " + std::to_string(socket_last_error());
+#endif
         return false;
     }
     if (received == 0) {
@@ -133,15 +180,15 @@ bool receive_available(
     return true;
 }
 
-void close_client_connection(SOCKET& clientSocket)
+void close_client_connection(ClientSocket& clientSocket)
 {
-    if (clientSocket != INVALID_SOCKET) {
-        closesocket(clientSocket);
-        clientSocket = INVALID_SOCKET;
+    if (clientSocket != INVALID_CLIENT_SOCKET) {
+        close_socket(clientSocket);
+        clientSocket = INVALID_CLIENT_SOCKET;
     }
 }
 
 void cleanup_client_network()
 {
-    WSACleanup();
+    cleanup_socket_runtime();
 }
