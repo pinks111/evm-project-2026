@@ -7,13 +7,14 @@ bool send_all(SOCKET socket, const std::string& reply) {
   int total_sent = 0;
 
   while (total_sent < reply_size) {
-    int sent = send(socket,
-                    reply.data() + total_sent,
-                    reply_size - total_sent,
-                    0);
+    const std::ptrdiff_t sent = send_socket(
+        socket,
+        reply.data() + total_sent,
+        static_cast<std::size_t>(reply_size - total_sent)
+    );
 
-    if (sent == SOCKET_ERROR) {
-      std::cerr << "Send failed: " << WSAGetLastError() << '\n';
+    if (sent < 0) {
+      std::cerr << "Send failed: " << socket_last_error() << '\n';
       return false;
     }
 

@@ -1,6 +1,7 @@
 #pragma once
 
-#include <winsock2.h>
+#include "../common/socket_compat.hpp"
+
 #include <array>
 #include <string>
 

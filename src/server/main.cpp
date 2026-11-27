@@ -1,6 +1,7 @@
 #include "lobby.hpp"
 #include "net.hpp"
 #include "game.hpp"
+#include "../common/socket_compat.hpp"
 
 #include <cctype>
 #include <algorithm>
@@ -8,24 +9,30 @@
 #include <iostream>
 #include <string>
 
-#pragma comment(lib,"ws2_32.lib")
 const int PORT = 2024;
 
 void handleError(bool err, const char* msg) {
   if (!err) {
     return;
   }
-  std::cerr << msg << WSAGetLastError() << std::endl;
+  std::cerr << msg << socket_last_error() << std::endl;
   exit(EXIT_FAILURE);
 }
 
 int main(int argc, char* const argv[]) {
-  WSADATA wsa;
-  int res = WSAStartup(MAKEWORD(2, 2), &wsa);
-  handleError(res != 0, "WSAStartup failed with error: ");
+  int res = initialize_socket_runtime();
+  handleError(res != 0, "Socket initialization failed with error: ");
 
   SOCKET server_sock = socket(AF_INET, SOCK_STREAM, 0);
   handleError(server_sock == INVALID_SOCKET, "Socket creation failed with error: ");
+
+  if (!configure_socket_no_sigpipe(server_sock)) {
+    std::cerr << "Could not configure server socket: "
+              << socket_last_error() << '\n';
+    close_socket(server_sock);
+    cleanup_socket_runtime();
+    return 1;
+  }
 
   std::cout << "Socket created successfully" << std::endl;
 
@@ -40,9 +47,9 @@ int main(int argc, char* const argv[]) {
 
   res = listen(server_sock, 3);
   if (res == SOCKET_ERROR) {
-    std::cerr << "Listen failed with error: " << WSAGetLastError() << std::endl;
-    closesocket(server_sock);
-    WSACleanup();
+    std::cerr << "Listen failed with error: " << socket_last_error() << std::endl;
+    close_socket(server_sock);
+    cleanup_socket_runtime();
     return 1;
   }
 
@@ -62,8 +69,15 @@ int main(int argc, char* const argv[]) {
       }
     }
 
-    if (select(0, &readfds, nullptr, nullptr, nullptr) == SOCKET_ERROR) { // с селекта идёт обработка сокетов(игроков)
-      std::cerr << "Select failed with error: " << WSAGetLastError() << std::endl;
+    SOCKET highest_socket = server_sock;
+    for (const auto& client : lobby.clients) {
+      if (client.socket != INVALID_SOCKET && client.socket > highest_socket) {
+        highest_socket = client.socket;
+      }
+    }
+
+    if (wait_for_socket(highest_socket, &readfds) == SOCKET_ERROR) { // с селекта идёт обработка сокетов(игроков)
+      std::cerr << "Select failed with error: " << socket_last_error() << std::endl;
       break;
     }
 
@@ -71,13 +85,17 @@ int main(int argc, char* const argv[]) {
       std::cout << "New client connection\n";
       SOCKET client_socket = accept(server_sock, nullptr, nullptr);
       if (client_socket == INVALID_SOCKET) {
-        std::cerr << "Accept failed: " << WSAGetLastError() << '\n';
+        std::cerr << "Accept failed: " << socket_last_error() << '\n';
+      } else if (!configure_socket_no_sigpipe(client_socket)) {
+        std::cerr << "Could not configure client socket: "
+                  << socket_last_error() << '\n';
+        close_socket(client_socket);
       } else {
         auto it = std::find_if(lobby.clients.begin(), lobby.clients.end(),
                               [](const Client& c) { return c.socket == INVALID_SOCKET; });
         if (it == lobby.clients.end()) {
           std::cout << "Lobby is full\n";
-          closesocket(client_socket);
+          close_socket(client_socket);
         } else {
           it -> socket = client_socket;
           std::cout << "Client connected\n";
@@ -90,13 +108,10 @@ int main(int argc, char* const argv[]) {
         continue;
       }
       char buf[256];
-      int received = recv(client.socket,
-                          buf,
-                          sizeof(buf),
-                          0  
-                        );
-      if (received == SOCKET_ERROR) {
-        const int error = WSAGetLastError();
+      const std::ptrdiff_t received =
+          receive_socket(client.socket, buf, sizeof(buf));
+      if (received < 0) {
+        const int error = socket_last_error();
         std::cerr << "Receive failed: " << error << '\n';
         remove_client(lobby, client);
         send_state(lobby);
@@ -303,7 +318,7 @@ int main(int argc, char* const argv[]) {
     }
   }
   
-  closesocket(server_sock);
-  WSACleanup();
+  close_socket(server_sock);
+  cleanup_socket_runtime();
   return 0;
 }

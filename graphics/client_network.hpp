@@ -1,27 +1,29 @@
 #pragma once
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOGDI
-#define NOGDI
-#endif
-#ifndef NOUSER
-#define NOUSER
-#endif
-#include <winsock2.h>
+#include "../src/common/socket_compat.hpp"
 
 #include <string>
 #include <vector>
 
-bool open_client_connection(SOCKET& client_socket, const wchar_t* server_ip, std::string& error);
-bool send_all(SOCKET clientSocket, const std::string& message, std::string& error);
+using ClientSocket = SOCKET;
+inline constexpr ClientSocket INVALID_CLIENT_SOCKET = INVALID_SOCKET;
+
+bool open_client_connection(
+    ClientSocket& clientSocket,
+    const std::string& serverHost,
+    std::string& error
+);
+bool send_all(
+    ClientSocket clientSocket,
+    const std::string& message,
+    std::string& error
+);
 bool receive_available(
-    SOCKET clientSocket,
+    ClientSocket clientSocket,
     std::string& pending,
     std::vector<std::string>& lines,
     bool& disconnected,
     std::string& error
 );
-void close_client_connection(SOCKET& clientSocket);
+void close_client_connection(ClientSocket& clientSocket);
 void cleanup_client_network();

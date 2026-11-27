@@ -7,7 +7,7 @@
 namespace {
 
 void disconnect_client(Client& client) {
-    closesocket(client.socket);
+    close_socket(client.socket);
     client = Client{};
     std::cout << "Connection closed\n";
 }
